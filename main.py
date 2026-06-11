@@ -106,14 +106,24 @@ async def _post_presentation_if_needed() -> None:
 
 
 async def _avisar_se_briefing_em_andamento() -> None:
-    """Pós-restart: avisa no canal de briefing se havia conversa recente sem estado em memória."""
+    """Pós-restart: avisa no canal de briefing sobre briefing persistido ou recente."""
     if not config.BRIEFING_CHANNEL_ID:
         return
     channel = bot.get_channel(int(config.BRIEFING_CHANNEL_ID))
     if not channel:
         return
-    if order_state.get(int(config.BRIEFING_CHANNEL_ID)):
-        return  # estado ainda em memória, não precisa avisar
+
+    state = order_state.get(int(config.BRIEFING_CHANNEL_ID))
+    if state:
+        # Estado recuperado do banco — atendimento pode continuar sem /briefing de novo
+        # Nota: Views/botões do discord.py não sobrevivem a restart; estado sim.
+        await channel.send(
+            f"♻️ Reiniciei — o briefing do pedido **{state.order_number}** continua ativo, "
+            "pode seguir respondendo."
+        )
+        return
+
+    # Sem estado no banco: verificar se havia conversa recente (edge case)
     cutoff = discord.utils.utcnow() - timedelta(hours=8)
     try:
         async for msg in channel.history(limit=20, after=cutoff):
@@ -170,6 +180,13 @@ async def on_message(message: discord.Message) -> None:
                 await briefing_handler.send_artist_call(message.channel, state, message)
                 return
         if state and state.stage == "questionnaire":
+            if message.attachments:
+                nomes = ", ".join(f"**{a.filename}**" for a in message.attachments)
+                await message.channel.send(
+                    f"📎 Recebi {nomes}. Para incluí-lo na análise, use **/briefing** novamente — eu recoleto tudo do canal.",
+                    delete_after=20,
+                )
+                return
             await briefing_handler.handle_response(message)
             return
         if not state and not message.author.bot:
