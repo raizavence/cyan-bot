@@ -71,19 +71,25 @@ CAMPOS_VISUAIS = ("logo", "fundo", "cor", "redes_sociais", "qr_code", "ean",
 
 REQUISITOS_POR_TIPO: dict[str, dict[str, list[str]]] = {
     "reimpressao": {
-        # Todos os visuais estão no arquivo de referência — só quantidade e referência são críticos.
-        # "FINALIZAR na 1ª rodada se quantidade clara" surge de graça: pendencias_criticas() == []
-        "criticos": ["quantidade", "arquivo_referencia"],
-        "complementares": [],
+        # Finaliza sozinha quando arquivo_referencia + produto (tipo + volumetria) presentes.
+        # Quantidade removida dos críticos: a arte não depende dela (é dado de produção).
+        # "produto" é checado no nível do Pedido em pendencias_criticas().
+        "criticos": ["arquivo_referencia", "produto"],
+        "complementares": ["quantidade"],
     },
     "reimpressao_com_alteracao": {
-        "criticos": ["quantidade", "arquivo_referencia"],
-        "complementares": list(CAMPOS_VISUAIS),
+        # Mesma base de reimpressão + campos visuais das alterações como complementares.
+        "criticos": ["arquivo_referencia", "produto"],
+        "complementares": ["quantidade"] + list(CAMPOS_VISUAIS),
     },
     "arte_nova": {
-        # cor: só crítica sem referência visual (checada em pendencias_criticas)
-        "criticos": ["quantidade", "logo", "cor"],
-        "complementares": ["fundo", "redes_sociais", "qr_code", "ean",
+        # logo: crítico quando estado="pendente" (desconhecido). estado="nao_se_aplica"
+        #   (estampa ou arte fechada sem logo) → OK, não bloqueia.
+        # cor: removida dos críticos. Default = "fundo branco (padrão — cliente não especificou)"
+        #   quando não informada e sem sinal de cor esperada. O extrator aplica o default;
+        #   só vira pergunta se cliente mencionou cores ou referência é colorida.
+        "criticos": ["quantidade", "logo"],
+        "complementares": ["fundo", "cor", "redes_sociais", "qr_code", "ean",
                            "tabela_nutricional", "selos", "box"],
     },
 }
@@ -100,18 +106,25 @@ def pendencias_criticas(pedido: Pedido) -> list[str]:
             continue
         reqs = REQUISITOS_POR_TIPO.get(modelo.tipo_arte, {})
         criticos = reqs.get("criticos", [])
-        if "quantidade" in criticos and modelo.quantidade is None:
-            result.append(f"{label}: quantidade não informada")
+
+        # "produto" é campo do Pedido (tipo + volumetria), não do Modelo
+        if "produto" in criticos and pedido.produto is None:
+            result.append(f"{label}: tipo de produto e volumetria não informados")
+
         if "arquivo_referencia" in criticos and modelo.arquivo_referencia is None:
             result.append(f"{label}: arquivo de referência não recebido")
+
+        if "quantidade" in criticos and modelo.quantidade is None:
+            result.append(f"{label}: quantidade não informada")
+
+        # campos visuais (CampoVisual no Modelo)
+        _nao_campo = {"produto", "arquivo_referencia", "quantidade"}
         for campo in criticos:
-            if campo in ("quantidade", "arquivo_referencia"):
+            if campo in _nao_campo:
                 continue
             cv: Optional[CampoVisual] = getattr(modelo, campo, None)
+            # "pendente" = desconhecido → bloqueia; "nao_se_aplica" ou qualquer outro = resolvido
             if cv and cv.estado == "pendente":
-                # cor não é crítica quando há referência visual
-                if campo == "cor" and modelo.arquivo_referencia:
-                    continue
                 result.append(f"{label}: {campo} pendente")
     return result
 
@@ -124,6 +137,10 @@ def pendencias_complementares(pedido: Pedido) -> list[str]:
             continue
         reqs = REQUISITOS_POR_TIPO.get(modelo.tipo_arte, {})
         for campo in reqs.get("complementares", []):
+            if campo == "quantidade":
+                if modelo.quantidade is None:
+                    result.append(f"{label}: quantidade não informada")
+                continue
             cv: Optional[CampoVisual] = getattr(modelo, campo, None)
             if cv and cv.estado == "pendente":
                 result.append(f"{label}: {campo} pendente")
