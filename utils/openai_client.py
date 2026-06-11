@@ -449,6 +449,22 @@ INDEFINIDO → se não for possível determinar pelo conteúdo
 Responda com apenas uma palavra: PRODUCAO, REFERENCIA ou INDEFINIDO"""
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Mini-prompt de domínio para analyze_file (CY6.2)
+# Substitui o SYSTEM_PROMPT de 18 K na tentativa 1 — economia ~4,5 K tokens/arquivo.
+# O ANALYSIS_PROMPT_TEMPLATE já traz as regras técnicas completas; aqui só contexto.
+# ─────────────────────────────────────────────────────────────────────────────
+_ANALYZE_DOMAIN_PROMPT = (
+    "Você é o Cyan, assistente de arte final da Copack — empresa de embalagens offset (CMYK).\n"
+    "PSD e PSB são SEMPRE aceitos — analisar visualmente como qualquer imagem.\n"
+    "PNG com fundo transparente: aceito (não rejeitar por falta de CMYK nativo).\n"
+    "PNG com fundo branco: aceito com alerta ⚠️.\n"
+    "Resolução: ✅ nítido | ⚠️ duvidoso | 🔴 claramente pixelizado.\n"
+    "Rejeitar: arquivo corrompido, arte em leque, baixa resolução clara, "
+    "logo com fundo colorido, QR Code em bitmap de baixa resolução."
+)
+
+
 def _extract_tag(text: str, tag: str) -> str:
     """Extrai conteúdo entre <TAG> e </TAG>."""
     pattern = rf"<{tag}>(.*?)</{tag}>"
@@ -513,11 +529,11 @@ class OpenAIClient:
 
         prompt = ANALYSIS_PROMPT_TEMPLATE.format(filename=filename, order_tag=order_tag)
 
-        # ── Tentativa 1: com system prompt de briefing ──────────────────────
+        # ── Tentativa 1: mini-prompt de domínio (CY6.2 — economiza ~4,5 K tokens/arquivo)
         resp1 = await self.client.chat.completions.create(
             model=self.model,
             messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "system", "content": _ANALYZE_DOMAIN_PROMPT},
                 {"role": "user", "content": [{"type": "text", "text": prompt}, *file_content]},
             ],
             max_tokens=1024,
@@ -576,29 +592,8 @@ class OpenAIClient:
                 return "reference"
             return "production"
 
-        # Para imagens (.png, .jpg etc.) — usa GPT mas só com texto, sem base64
-        # Economiza tokens: o nome do arquivo já dá bastante contexto ao GPT
-        text_parts = [p for p in file_content if p.get("type") == "text"]
-        if not text_parts:
-            text_parts = [{"type": "text", "text": f"Arquivo: {filename}"}]
-
-        prompt = CLASSIFY_PROMPT.format(filename=filename)
-        response = await self.client.chat.completions.create(
-            model=self.model,
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {
-                    "role": "user",
-                    "content": [{"type": "text", "text": prompt}, *text_parts],
-                },
-            ],
-            max_tokens=20,
-        )
-        raw = (response.choices[0].message.content or "").upper().strip()
-        if "PRODUCAO" in raw or "PRODUÇÃO" in raw or "PRODU" in raw:
-            return "production"
-        if "REFERENCIA" in raw or "REFERÊNCIA" in raw or "REFER" in raw:
-            return "reference"
+        # CY4: imagens retornam "undefined" diretamente enquanto o fluxo de
+        # encaminhamento/ZIP está pausado — sem chamada GPT. Reversível na retomada (CY6).
         return "undefined"
 
     # ── resposta a dúvidas (/ajuda) ───────────────────────────────────────────
@@ -650,7 +645,7 @@ class OpenAIClient:
         """
         prompt = AUDIO_SUMMARY_PROMPT.format(transcript=transcript[:4000])
         response = await self.client.chat.completions.create(
-            model=self.model,
+            model="gpt-4o-mini",  # CY4: resumo de contexto interno — mini é suficiente
             messages=[{"role": "user", "content": prompt}],
             max_tokens=300,
         )
