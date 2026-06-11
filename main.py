@@ -1,5 +1,6 @@
 import logging
 import sys
+from datetime import timedelta
 
 import discord
 from discord import app_commands
@@ -104,6 +105,28 @@ async def _post_presentation_if_needed() -> None:
         logger.warning("Sem permissão para fixar mensagem no Geral — pin manual necessário")
 
 
+async def _avisar_se_briefing_em_andamento() -> None:
+    """Pós-restart: avisa no canal de briefing se havia conversa recente sem estado em memória."""
+    if not config.BRIEFING_CHANNEL_ID:
+        return
+    channel = bot.get_channel(int(config.BRIEFING_CHANNEL_ID))
+    if not channel:
+        return
+    if order_state.get(int(config.BRIEFING_CHANNEL_ID)):
+        return  # estado ainda em memória, não precisa avisar
+    cutoff = discord.utils.utcnow() - timedelta(hours=8)
+    try:
+        async for msg in channel.history(limit=20, after=cutoff):
+            if not msg.author.bot:
+                await channel.send(
+                    "♻️ Reiniciei. Se havia um briefing em andamento, use **/briefing** novamente "
+                    "— eu recoletarei tudo que está no canal."
+                )
+                break
+    except Exception as exc:
+        logger.warning(f"Não foi possível verificar histórico do canal de briefing: {exc}")
+
+
 @bot.event
 async def on_ready() -> None:
     logger.info(f"✅ Cyan online como {bot.user} (ID: {bot.user.id})")
@@ -121,6 +144,7 @@ async def on_ready() -> None:
     except Exception as exc:
         logger.error(f"Erro ao sincronizar comandos: {exc}")
     await _post_presentation_if_needed()
+    await _avisar_se_briefing_em_andamento()
 
 
 @bot.event
@@ -193,17 +217,26 @@ async def cmd_analisar(interaction: discord.Interaction) -> None:
 async def cmd_limpar(interaction: discord.Interaction) -> None:
     await interaction.response.defer(ephemeral=True)
     try:
-        # Apaga todas as mensagens em lotes até o canal estar vazio
         total = 0
         while True:
-            deleted = await interaction.channel.purge(limit=100)
+            try:
+                deleted = await interaction.channel.purge(limit=100)
+            except discord.HTTPException:
+                # bulk delete não aceita mensagens > 14 dias — apagar individualmente
+                deleted_count = 0
+                async for msg in interaction.channel.history(limit=100):
+                    try:
+                        await msg.delete()
+                        deleted_count += 1
+                    except Exception:
+                        pass
+                total += deleted_count
+                break
             total += len(deleted)
             if len(deleted) < 100:
                 break
 
-        # Zera completamente o estado em memória
         order_state.remove(interaction.channel.id)
-
         await interaction.followup.send(
             f"🧹 {total} mensagens apagadas. Memória zerada. Canal pronto para novo briefing.",
             ephemeral=True,

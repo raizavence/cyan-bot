@@ -306,6 +306,8 @@ class BriefingHandler:
             elif has_questions:
                 await self._send_call_button(message.channel)
 
+            order_state.save(message.channel.id, state)
+
         except Exception as exc:
             logger.error(f"Erro ao processar resposta: {exc}", exc_info=True)
             await message.channel.send(f"❌ Erro ao processar resposta: `{exc}`")

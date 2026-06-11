@@ -3,7 +3,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Optional
 
-EXPIRY_SECONDS = 7200  # 2 horas sem atividade → estado expira
+EXPIRY_SECONDS = 28800  # 8 horas (um expediente) sem atividade → estado expira
 
 
 @dataclass
