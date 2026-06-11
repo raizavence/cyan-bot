@@ -1,0 +1,18 @@
+# Discord
+discord.py>=2.3.0
+
+# OpenAI
+openai>=1.30.0
+
+# Utilitários
+python-dotenv>=1.0.0
+aiohttp>=3.9.0
+
+# Processamento de imagens
+Pillow>=10.0.0
+
+# PDF (opcional mas recomendado)
+# pdf2image converte páginas em imagem (requer poppler instalado no sistema)
+# pypdf é o fallback quando pdf2image não está disponível
+pdf2image>=1.16.0
+pypdf>=3.0.0
