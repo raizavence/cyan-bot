@@ -11,6 +11,8 @@ class Config:
     ANALYSIS_CHANNEL_ID: str = os.getenv("ANALYSIS_CHANNEL_ID", "")
     GERAL_CHANNEL_ID: str = os.getenv("GERAL_CHANNEL_ID", "")
     RAIZA_DISCORD_ID: str = os.getenv("RAIZA_DISCORD_ID", "")
+    TEST_BRIEFING_CHANNEL_ID: str = os.getenv("TEST_BRIEFING_CHANNEL_ID", "")
+    CYAN_FLOW: str = os.getenv("CYAN_FLOW", "v1")  # "v1" ou "v2"
 
     # Limites operacionais
     MAX_MESSAGES_TO_COLLECT: int = 100

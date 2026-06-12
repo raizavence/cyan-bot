@@ -1,6 +1,7 @@
 import logging
 import sys
 from datetime import timedelta
+from pathlib import Path
 
 import discord
 from discord import app_commands
@@ -8,6 +9,7 @@ from discord.ext import commands
 
 from config import Config
 from handlers.briefing_handler import BriefingHandler
+from handlers.briefing_v2 import BriefingV2Handler
 from handlers.analysis_handler import AnalysisHandler
 from utils import order_state
 
@@ -37,9 +39,10 @@ intents.messages = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# ── handlers (recebem referência ao bot) ──────────────────────────────────────
+# ── handlers ──────────────────────────────────────────────────────────────────
 briefing_handler = BriefingHandler(config)
 analysis_handler = AnalysisHandler(config)
+briefing_v2_handler = BriefingV2Handler(config, briefing_handler)
 
 # Injeção cruzada de referências
 analysis_handler.bot = bot
@@ -113,9 +116,21 @@ async def _avisar_se_briefing_em_andamento() -> None:
     if not channel:
         return
 
+    if config.CYAN_FLOW == "v2":
+        row = order_state.get_v2_raw(int(config.BRIEFING_CHANNEL_ID))
+        if row:
+            from utils.briefing_schema import pedido_from_json
+            pedido = pedido_from_json(row[0])
+            # Nota: Views/botões do discord.py não sobrevivem a restart; estado sim.
+            await channel.send(
+                f"♻️ Reiniciei — o briefing do pedido **{pedido.numero_omie or '?'}** "
+                "continua ativo, pode seguir respondendo."
+            )
+        return
+
+    # v1
     state = order_state.get(int(config.BRIEFING_CHANNEL_ID))
     if state:
-        # Estado recuperado do banco — atendimento pode continuar sem /briefing de novo
         # Nota: Views/botões do discord.py não sobrevivem a restart; estado sim.
         await channel.send(
             f"♻️ Reiniciei — o briefing do pedido **{state.order_number}** continua ativo, "
@@ -123,7 +138,6 @@ async def _avisar_se_briefing_em_andamento() -> None:
         )
         return
 
-    # Sem estado no banco: verificar se havia conversa recente (edge case)
     cutoff = discord.utils.utcnow() - timedelta(hours=8)
     try:
         async for msg in channel.history(limit=20, after=cutoff):
@@ -135,6 +149,52 @@ async def _avisar_se_briefing_em_andamento() -> None:
                 break
     except Exception as exc:
         logger.warning(f"Não foi possível verificar histórico do canal de briefing: {exc}")
+
+
+async def _anunciar_v2_se_necessario() -> None:
+    """Posta no #geral uma única vez quando CYAN_FLOW=v2 é ativado."""
+    if config.CYAN_FLOW != "v2":
+        return
+    marker = Path("/root/cyan-bot/.v2-announced")
+    if marker.exists():
+        return
+    if not config.GERAL_CHANNEL_ID:
+        return
+    channel = bot.get_channel(int(config.GERAL_CHANNEL_ID))
+    if not channel:
+        return
+    try:
+        await channel.send(
+            "🔄 **Atualização do Cyan:** o canal **#briefing-do-pedido** agora usa "
+            "o pipeline v2. O fluxo de uso continua exatamente igual — a diferença: "
+            "arquivos enviados **durante o questionário** agora entram automaticamente "
+            "na análise, sem precisar de **/briefing** de novo."
+        )
+        marker.touch()
+        logger.info("Pipeline v2 anunciado no #geral")
+    except Exception as exc:
+        logger.warning(f"Não foi possível anunciar v2 no #geral: {exc}")
+
+
+async def _avisar_v2_se_briefing_em_andamento() -> None:
+    """Pós-restart: avisa no canal de teste se havia briefing v2 persistido."""
+    if not config.TEST_BRIEFING_CHANNEL_ID:
+        return
+    channel = bot.get_channel(int(config.TEST_BRIEFING_CHANNEL_ID))
+    if not channel:
+        return
+    row = order_state.get_v2_raw(int(config.TEST_BRIEFING_CHANNEL_ID))
+    if not row:
+        return
+    from utils.briefing_schema import pedido_from_json
+    pedido = pedido_from_json(row[0])
+    try:
+        await channel.send(
+            f"♻️ [v2] Reiniciei — briefing do pedido **{pedido.numero_omie or '?'}** "
+            "continua ativo no canal de teste, pode seguir respondendo."
+        )
+    except Exception as exc:
+        logger.warning(f"Não foi possível avisar canal de teste pós-restart: {exc}")
 
 
 @bot.event
@@ -155,6 +215,8 @@ async def on_ready() -> None:
         logger.error(f"Erro ao sincronizar comandos: {exc}")
     await _post_presentation_if_needed()
     await _avisar_se_briefing_em_andamento()
+    await _avisar_v2_se_briefing_em_andamento()
+    await _anunciar_v2_se_necessario()
 
 
 @bot.event
@@ -167,10 +229,48 @@ async def on_message(message: discord.Message) -> None:
     # Canal de análise: análise automática de arquivos
     if ch_id == config.ANALYSIS_CHANNEL_ID and message.attachments:
         await analysis_handler.handle_automatic(message)
-        return  # não processa como resposta de briefing
+        return
 
-    # Canal de briefing: captura imagem de chamado pendente ou resposta ao questionário
+    # ── Canal de teste (#briefing-teste) — pipeline v2 ────────────────────────
+    if config.TEST_BRIEFING_CHANNEL_ID and ch_id == config.TEST_BRIEFING_CHANNEL_ID:
+        row = order_state.get_v2_raw(message.channel.id)
+        if row and row[2] == "questionnaire":
+            if message.attachments:
+                await briefing_v2_handler.handle_attachment(message)
+            else:
+                await briefing_v2_handler.handle_response(message)
+            return
+        if not row:
+            await message.channel.send(
+                "Não há briefing v2 ativo. Use **/briefing** para iniciar.",
+                delete_after=8,
+            )
+        return  # sem bot.process_commands — canal de teste só aceita slash commands
+
+    # ── Canal de briefing de produção ─────────────────────────────────────────
     if ch_id == config.BRIEFING_CHANNEL_ID:
+        if config.CYAN_FLOW == "v2":
+            # Chamado de arte (pending_call vive no estado v1, acionado por Views)
+            v1_state = order_state.get(message.channel.id)
+            if v1_state and v1_state.pending_call:
+                if message.author.id == v1_state.pending_call.user_id and message.attachments:
+                    await briefing_handler.send_artist_call(message.channel, v1_state, message)
+                    return
+            # Fluxo principal v2
+            row = order_state.get_v2_raw(message.channel.id)
+            if row and row[2] == "questionnaire":
+                if message.attachments:
+                    await briefing_v2_handler.handle_attachment(message)
+                else:
+                    await briefing_v2_handler.handle_response(message)
+                return
+            if not row and not message.author.bot:
+                await message.channel.send(
+                    "Não há briefing ativo. Use **/briefing** para iniciar a análise.",
+                    delete_after=8,
+                )
+            return
+        # v1
         state = order_state.get(message.channel.id)
         if state and state.pending_call:
             if (
@@ -206,12 +306,19 @@ async def on_message(message: discord.Message) -> None:
     description="Analisa os materiais do pedido e inicia o questionário de briefing",
 )
 async def cmd_briefing(interaction: discord.Interaction) -> None:
-    if str(interaction.channel_id) != config.BRIEFING_CHANNEL_ID:
-        await interaction.response.send_message(
-            "❌ Use este comando no canal **#briefing-do-pedido**.", ephemeral=True
-        )
+    ch_id = str(interaction.channel_id)
+    if config.TEST_BRIEFING_CHANNEL_ID and ch_id == config.TEST_BRIEFING_CHANNEL_ID:
+        await briefing_v2_handler.handle(interaction)
         return
-    await briefing_handler.handle(interaction)
+    if ch_id == config.BRIEFING_CHANNEL_ID:
+        if config.CYAN_FLOW == "v2":
+            await briefing_v2_handler.handle(interaction)
+        else:
+            await briefing_handler.handle(interaction)
+        return
+    await interaction.response.send_message(
+        "❌ Use este comando no canal **#briefing-do-pedido**.", ephemeral=True
+    )
 
 
 @bot.tree.command(
@@ -254,6 +361,7 @@ async def cmd_limpar(interaction: discord.Interaction) -> None:
                 break
 
         order_state.remove(interaction.channel.id)
+        order_state.remove_v2(interaction.channel.id)
         await interaction.followup.send(
             f"🧹 {total} mensagens apagadas. Memória zerada. Canal pronto para novo briefing.",
             ephemeral=True,
@@ -281,12 +389,19 @@ async def cmd_ajuda(interaction: discord.Interaction, pergunta: str) -> None:
     description="Encerra o questionário e gera o pacote final (briefing + ZIP)",
 )
 async def cmd_finalizar(interaction: discord.Interaction) -> None:
-    if str(interaction.channel_id) != config.BRIEFING_CHANNEL_ID:
-        await interaction.response.send_message(
-            "❌ Use este comando no canal **#briefing-do-pedido**.", ephemeral=True
-        )
+    ch_id = str(interaction.channel_id)
+    if config.TEST_BRIEFING_CHANNEL_ID and ch_id == config.TEST_BRIEFING_CHANNEL_ID:
+        await briefing_v2_handler.finalize(interaction)
         return
-    await briefing_handler.finalize(interaction)
+    if ch_id == config.BRIEFING_CHANNEL_ID:
+        if config.CYAN_FLOW == "v2":
+            await briefing_v2_handler.finalize(interaction)
+        else:
+            await briefing_handler.finalize(interaction)
+        return
+    await interaction.response.send_message(
+        "❌ Use este comando no canal **#briefing-do-pedido**.", ephemeral=True
+    )
 
 
 # ── erros globais ─────────────────────────────────────────────────────────────

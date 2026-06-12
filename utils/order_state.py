@@ -145,3 +145,62 @@ def find_by_order(order_number: str) -> Optional[tuple[int, OrderState]]:
         if state.order_number == order_number:
             return channel_id, state
     return None
+
+
+# ── V2 state (briefings_v2) ────────────────────────────────────────────────────
+
+def _init_v2_db() -> None:
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS briefings_v2 (
+                channel_id INTEGER PRIMARY KEY,
+                pedido_json TEXT NOT NULL,
+                conversation_json TEXT NOT NULL,
+                stage TEXT NOT NULL DEFAULT 'questionnaire',
+                last_activity REAL NOT NULL
+            )
+        """)
+        conn.commit()
+
+
+_init_v2_db()
+
+
+def get_v2_raw(channel_id: int) -> Optional[tuple[str, str, str]]:
+    """Retorna (pedido_json, conversation_json, stage) ou None se expirado/inexistente."""
+    with sqlite3.connect(DB_PATH) as conn:
+        row = conn.execute(
+            "SELECT pedido_json, conversation_json, stage, last_activity FROM briefings_v2 WHERE channel_id = ?",
+            (channel_id,),
+        ).fetchone()
+    if not row:
+        return None
+    pedido_json, conv_json, stage, last_activity = row
+    if (time.time() - last_activity) > EXPIRY_SECONDS:
+        remove_v2(channel_id)
+        return None
+    return pedido_json, conv_json, stage
+
+
+def save_v2(channel_id: int, pedido_json: str, conversation_json: str, stage: str) -> None:
+    now = time.time()
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(
+            """
+            INSERT INTO briefings_v2 (channel_id, pedido_json, conversation_json, stage, last_activity)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(channel_id) DO UPDATE SET
+                pedido_json = excluded.pedido_json,
+                conversation_json = excluded.conversation_json,
+                stage = excluded.stage,
+                last_activity = excluded.last_activity
+            """,
+            (channel_id, pedido_json, conversation_json, stage, now),
+        )
+        conn.commit()
+
+
+def remove_v2(channel_id: int) -> None:
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute("DELETE FROM briefings_v2 WHERE channel_id = ?", (channel_id,))
+        conn.commit()
