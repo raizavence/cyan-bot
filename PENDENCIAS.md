@@ -1,9 +1,19 @@
 # PENDÊNCIAS — leia antes de qualquer trabalho no Cyan
 
+> **PLANO DE EXECUÇÃO PRONTO (2026-06-12, Fable 5):** os 3 problemas abaixo
+> viraram as etapas **CY7.1–CY7.5 no `/root/PLANO.md`** (seção "CY7 — ANÁLISE
+> TÉCNICA DE ARQUIVO NO PIPELINE V2", Fase H da ordem global). O executor
+> (Sonnet) deve seguir o PLANO.md — este arquivo é o diagnóstico de origem.
+> Restrição de Raíza: sem custos extras (zero instalações, zero chamadas GPT
+> novas — a análise pega carona na chamada de extração existente).
+> Regra nova de negócio (Raíza, 2026-06-12): arte em leque/bitmap = só
+> referência; arte final recriada semelhante com auxílio de IA; logo PNG
+> transparente de boa qualidade = produção.
+
 > **Contexto:** Pipeline v2 (CY6.1–CY6.5) implementado e testado no canal
-> `#briefing-teste` em 2026-06-12. Dois problemas identificados no teste.
-> A faxina do v1 (CY6.6) está **bloqueada** até estes dois problemas serem
-> resolvidos no v2.
+> `#briefing-teste` em 2026-06-12. Três problemas identificados no teste.
+> A faxina do v1 (CY6.6) está **bloqueada** até estes problemas serem
+> resolvidos no v2 e validados por Raíza (CY7.5).
 
 ---
 
