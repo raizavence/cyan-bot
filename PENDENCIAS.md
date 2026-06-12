@@ -1,5 +1,12 @@
 # PENDÊNCIAS — leia antes de qualquer trabalho no Cyan
 
+> **CY8 EXECUTADO (2026-06-12, Sonnet 4.6):** CY8.1–CY8.4 implementados e
+> testados localmente. Bot reiniciado sem erros. Aguarda reteste de Raíza no
+> #briefing-teste (CY8.5): enviar pedido com cor prateada + checklist de
+> box/selos/EAN e verificar: (1) bloco ⚠️ LIMITAÇÕES DE IMPRESSÃO no briefing;
+> (2) botões ✅/❌ item a item; (3) confirmação final com "Não" → modal →
+> observação no briefing + chamado no #geral.
+
 > **PLANO DE EXECUÇÃO PRONTO (2026-06-12, Fable 5):** os 3 problemas abaixo
 > viraram as etapas **CY7.1–CY7.5 no `/root/PLANO.md`** (seção "CY7 — ANÁLISE
 > TÉCNICA DE ARQUIVO NO PIPELINE V2", Fase H da ordem global). O executor

@@ -1,5 +1,5 @@
 """
-Módulo CY6.2 — Schema estruturado do pedido (DESLIGADO em produção até CY6.4).
+Módulo CY6.2 — Schema estruturado do pedido (atualizado CY7.2, CY8.1).
 Não importado pelos handlers da v1.
 """
 from __future__ import annotations
@@ -15,9 +15,15 @@ ESTADOS_CAMPO = {
     "resolvido_pela_referencia",
     "identificado_na_referencia_aguardando_arquivo",
     "nao_se_aplica",
+    "aguardando_material",   # CY8: atendimento confirmou que vai ter; material ainda não recebido
 }
 
 CLASSES_ARQUIVO = {"producao", "referencia", "indefinido"}
+
+# CY8 — Checklist de presença binária para modelos de arte nova
+# logo fica FORA (D2): é crítico de arte_nova, já tratado em pendencias_criticas
+CAMPOS_CHECKLIST = ("redes_sociais", "qr_code", "ean", "tabela_nutricional", "selos", "box")
+TIPOS_COM_CHECKLIST = {"arte_nova"}
 
 
 @dataclass
@@ -63,33 +69,26 @@ class Pedido:
     modelos: list[Modelo] = field(default_factory=list)
     arquivos: list[Arquivo] = field(default_factory=list)
     inconsistencias: list[str] = field(default_factory=list)
+    alertas_impressao: list[str] = field(default_factory=list)       # CY8: limitações Offset CMYK
+    observacoes_atendimento: list[str] = field(default_factory=list) # CY8: obs da confirmação final
 
 
 # ── Tabela de requisitos por tipo de arte ─────────────────────────────────────
-# Regra de negócio — será validada por Raíza na CY6.3 antes de entrar em produção.
+# Regra de negócio — validada por Raíza na CY6.3.
 
 CAMPOS_VISUAIS = ("logo", "fundo", "cor", "redes_sociais", "qr_code", "ean",
                   "tabela_nutricional", "selos", "box")
 
 REQUISITOS_POR_TIPO: dict[str, dict[str, list[str]]] = {
     "reimpressao": {
-        # Finaliza sozinha quando arquivo_referencia + produto (tipo + volumetria) presentes.
-        # Quantidade removida dos críticos: a arte não depende dela (é dado de produção).
-        # "produto" é checado no nível do Pedido em pendencias_criticas().
         "criticos": ["arquivo_referencia", "produto"],
         "complementares": ["quantidade"],
     },
     "reimpressao_com_alteracao": {
-        # Mesma base de reimpressão + campos visuais das alterações como complementares.
         "criticos": ["arquivo_referencia", "produto"],
         "complementares": ["quantidade"] + list(CAMPOS_VISUAIS),
     },
     "arte_nova": {
-        # logo: crítico quando estado="pendente" (desconhecido). estado="nao_se_aplica"
-        #   (estampa ou arte fechada sem logo) → OK, não bloqueia.
-        # cor: removida dos críticos. Default = "fundo branco (padrão — cliente não especificou)"
-        #   quando não informada e sem sinal de cor esperada. O extrator aplica o default;
-        #   só vira pergunta se cliente mencionou cores ou referência é colorida.
         "criticos": ["quantidade", "logo"],
         "complementares": ["fundo", "cor", "redes_sociais", "qr_code", "ean",
                            "tabela_nutricional", "selos", "box"],
@@ -116,7 +115,6 @@ def pendencias_criticas(pedido: Pedido) -> list[str]:
         reqs = REQUISITOS_POR_TIPO.get(modelo.tipo_arte, {})
         criticos = reqs.get("criticos", [])
 
-        # "produto" é campo do Pedido (tipo + volumetria), não do Modelo
         if "produto" in criticos and pedido.produto is None:
             result.append(f"{label}: tipo de produto e volumetria não informados")
 
@@ -126,13 +124,11 @@ def pendencias_criticas(pedido: Pedido) -> list[str]:
         if "quantidade" in criticos and modelo.quantidade is None:
             result.append(f"{label}: quantidade não informada")
 
-        # campos visuais (CampoVisual no Modelo)
         _nao_campo = {"produto", "arquivo_referencia", "quantidade"}
         for campo in criticos:
             if campo in _nao_campo:
                 continue
             cv: Optional[CampoVisual] = getattr(modelo, campo, None)
-            # "pendente" = desconhecido → bloqueia; "nao_se_aplica" ou qualquer outro = resolvido
             if cv and cv.estado == "pendente":
                 result.append(f"{label}: {campo} pendente")
     return result
@@ -142,7 +138,6 @@ def pendencias_complementares(pedido: Pedido) -> list[str]:
     result = []
 
     # Arquivos com flag "atencao" e recomendação → complementar (CY7.4)
-    # Leque entra aqui: não bloqueia, mas o briefing deve registrar
     for arq in pedido.arquivos:
         if arq.flag == "atencao" and arq.recomendacao:
             result.append(f"Arquivo {arq.nome}: {arq.recomendacao}")
@@ -160,7 +155,40 @@ def pendencias_complementares(pedido: Pedido) -> list[str]:
             cv: Optional[CampoVisual] = getattr(modelo, campo, None)
             if cv and cv.estado == "pendente":
                 result.append(f"{label}: {campo} pendente")
+            elif cv and cv.estado == "aguardando_material":
+                # CY8: confirmado que vai ter; material ainda não recebido
+                result.append(f"{label}: {campo} confirmado — aguardando material do cliente")
     return result
+
+
+# ── Helpers CY8 ───────────────────────────────────────────────────────────────
+
+def itens_checklist(pedido: Pedido) -> list[tuple[int, str]]:
+    """Retorna (índice do modelo, nome do campo) com estado pendente no checklist (D2/D4)."""
+    result = []
+    for i, modelo in enumerate(pedido.modelos):
+        if modelo.tipo_arte not in TIPOS_COM_CHECKLIST:
+            continue
+        for campo in CAMPOS_CHECKLIST:
+            cv: Optional[CampoVisual] = getattr(modelo, campo, None)
+            if cv and cv.estado == "pendente":
+                result.append((i, campo))
+    return result
+
+
+def proxima_fase(pedido: Pedido) -> str:
+    """Determina a próxima fase do pipeline v2 a partir do estado do objeto (D1).
+
+    Fases: questionnaire → checklist → confirmacao → complete
+    A transição é sempre derivada do objeto — nunca armazenada em dois lugares.
+    """
+    if pendencias_criticas(pedido):
+        return "questionnaire"
+    if itens_checklist(pedido):
+        return "checklist"
+    if any(m.tipo_arte == "arte_nova" for m in pedido.modelos):
+        return "confirmacao"
+    return "complete"
 
 
 # ── Serialização JSON ida-e-volta ─────────────────────────────────────────────
@@ -176,7 +204,7 @@ def pedido_from_json(data: "str | dict") -> Pedido:
     raw_modelos = data.get("modelos", [])
     modelos = []
     for m in raw_modelos:
-        m = dict(m)  # cópia para não modificar o original
+        m = dict(m)
         campos = {}
         for campo in CAMPOS_VISUAIS:
             raw = m.pop(campo, None)
@@ -194,4 +222,6 @@ def pedido_from_json(data: "str | dict") -> Pedido:
         modelos=modelos,
         arquivos=arquivos,
         inconsistencias=data.get("inconsistencias", []),
+        alertas_impressao=data.get("alertas_impressao", []),       # retro-compatível
+        observacoes_atendimento=data.get("observacoes_atendimento", []),  # retro-compatível
     )

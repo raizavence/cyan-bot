@@ -234,7 +234,8 @@ async def on_message(message: discord.Message) -> None:
     # ── Canal de teste (#briefing-teste) — pipeline v2 ────────────────────────
     if config.TEST_BRIEFING_CHANNEL_ID and ch_id == config.TEST_BRIEFING_CHANNEL_ID:
         row = order_state.get_v2_raw(message.channel.id)
-        if row and row[2] == "questionnaire":
+        _FASES_ATIVAS = ("questionnaire", "checklist", "confirmacao", "observacao")
+        if row and row[2] in _FASES_ATIVAS:
             if message.attachments:
                 await briefing_v2_handler.handle_attachment(message)
             else:
@@ -256,9 +257,10 @@ async def on_message(message: discord.Message) -> None:
                 if message.author.id == v1_state.pending_call.user_id and message.attachments:
                     await briefing_handler.send_artist_call(message.channel, v1_state, message)
                     return
-            # Fluxo principal v2
+            # Fluxo principal v2 — todas as fases ativas (CY8)
             row = order_state.get_v2_raw(message.channel.id)
-            if row and row[2] == "questionnaire":
+            _FASES_ATIVAS = ("questionnaire", "checklist", "confirmacao", "observacao")
+            if row and row[2] in _FASES_ATIVAS:
                 if message.attachments:
                     await briefing_v2_handler.handle_attachment(message)
                 else:

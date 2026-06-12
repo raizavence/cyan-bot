@@ -100,6 +100,9 @@ def briefing(pedido: Pedido, perguntas: str = "") -> str:
             lines.append("   Como montar:")
             for acao in modelo.acoes_para_arte:
                 lines.append(f"   • {acao}")
+            # CY8: citar observações do atendimento na seção "Como montar:" se existirem
+            for obs in pedido.observacoes_atendimento:
+                lines.append(f"   ⚠️ Obs. atendimento: {obs}")
 
     # ── Arquivos ──────────────────────────────────────────────────────────────
     if pedido.arquivos:
@@ -115,12 +118,26 @@ def briefing(pedido: Pedido, perguntas: str = "") -> str:
             if arq.recomendacao:
                 lines.append(f"   ↳ {arq.recomendacao}")
 
+    # ── Alertas de impressão (CY8) ────────────────────────────────────────────
+    if pedido.alertas_impressao:
+        lines.append(_SEP)
+        lines.append("⚠️ LIMITAÇÕES DE IMPRESSÃO (Offset CMYK)")
+        for alerta in pedido.alertas_impressao:
+            lines.append(f"• {alerta}")
+
     # ── Inconsistências ───────────────────────────────────────────────────────
     if pedido.inconsistencias:
         lines.append(_SEP)
         lines.append("⚠️ INCONSISTÊNCIAS")
         for j, inc in enumerate(pedido.inconsistencias, 1):
             lines.append(f"{j}. {inc}")
+
+    # ── Observações do atendimento (CY8) ──────────────────────────────────────
+    if pedido.observacoes_atendimento:
+        lines.append(_SEP)
+        lines.append("📝 OBSERVAÇÃO DO ATENDIMENTO PARA A ARTE")
+        for obs in pedido.observacoes_atendimento:
+            lines.append(f"• {obs}")
 
     # ── Pendências ────────────────────────────────────────────────────────────
     criticas = pendencias_criticas(pedido)
