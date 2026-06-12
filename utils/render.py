@@ -1,144 +1,149 @@
 """
-Módulo CY6.2 — Templates Python para o briefing final (DESLIGADO em produção até CY6.4).
+Módulo CY6.2 — Templates Python para o briefing final (layout aprovado em CY7.6).
 Não importado pelos handlers da v1.
 """
 from __future__ import annotations
 from utils.briefing_schema import (
-    Pedido, Modelo, CampoVisual,
+    Pedido, Modelo, CampoVisual, Arquivo,
     pendencias_criticas, pendencias_complementares,
 )
+
+_SEP = "──────────────"
 
 _TIPO_RENDER = {
     "arte_nova": "Arte Nova",
     "reimpressao": "Reimpressão sem alteração",
     "reimpressao_com_alteracao": "Reimpressão com alteração",
-    "pendente": "🟡 Pendente",
+    "pendente": "A definir",
 }
 
 _CLASSE_RENDER = {
-    "producao": "PRODUÇÃO",
-    "referencia": "REFERÊNCIA",
-    "indefinido": "INDEFINIDO",
+    "producao": "Produção",
+    "referencia": "Referência",
+    "indefinido": "A classificar",
+}
+
+_FLAG_EMOJI = {
+    "ok": "✅",
+    "atencao": "⚠️",
+    "recusar": "🔴",
+}
+
+_CAMPO_NOME = {
+    "logo": "Logo",
+    "fundo": "Fundo",
+    "cor": "Cor(es)",
+    "redes_sociais": "Redes sociais",
+    "qr_code": "QR Code",
+    "ean": "EAN / Código de barras",
+    "tabela_nutricional": "Tabela nutricional",
+    "selos": "Selos",
+    "box": "Box para escrita",
 }
 
 
-def _render_campo(cv: CampoVisual, nome: str) -> str:
-    if cv.estado == "preenchido":
-        return f"• {nome}: {cv.valor or 'Informado'}"
-    mapa = {
-        "pendente": "🟡 Pendente",
-        "resolvido_pela_referencia": "➖ Consta na referência",
-        "identificado_na_referencia_aguardando_arquivo": "🟡 Identificado na referência — aguardando arquivo",
-        "nao_se_aplica": "➖ Não se aplica",
-    }
-    return f"• {nome}: {mapa.get(cv.estado, cv.estado)}"
+def _campos_preenchidos(modelo: Modelo) -> list[str]:
+    """Retorna linhas compactas dos campos com estado=preenchido e valor."""
+    linhas = []
+    for campo, nome in _CAMPO_NOME.items():
+        cv: CampoVisual = getattr(modelo, campo)
+        if cv.estado == "preenchido" and cv.valor:
+            linhas.append(f"{nome}: {cv.valor}")
+    return linhas
 
 
-def _bloco_reimpressao(modelo: Modelo, numero: int) -> str:
-    label = f"📦 MODELO {numero}" + (f" — {modelo.nome}" if modelo.nome else "")
-    return "\n".join([
-        label,
-        f"• Quantidade: {modelo.quantidade or '🟡 Não informado'}",
-        "• Tipo de arte: Reimpressão sem alteração",
-        f"• Referência: {modelo.arquivo_referencia or '🟡 Não informado'}",
-    ])
+def _referencia_e_leque(modelo: Modelo, arquivos: list[Arquivo]) -> bool:
+    """True quando o arquivo_referencia do modelo é uma arte em leque."""
+    if not modelo.arquivo_referencia:
+        return False
+    for arq in arquivos:
+        if arq.nome == modelo.arquivo_referencia and "leque" in arq.status_tecnico.lower():
+            return True
+    return False
 
 
-def _bloco_completo(modelo: Modelo, numero: int) -> str:
-    label = f"📦 MODELO {numero}" + (f" — {modelo.nome}" if modelo.nome else "")
-    linhas = [
-        label,
-        f"• Quantidade: {modelo.quantidade or '🟡 Não informado'}",
-        f"• Tipo de arte: {_TIPO_RENDER.get(modelo.tipo_arte, modelo.tipo_arte)}",
-        _render_campo(modelo.logo, "Logo"),
-        _render_campo(modelo.fundo, "Fundo"),
-        _render_campo(modelo.cor, "Cor(es)"),
-        f"• Referência visual: {modelo.arquivo_referencia or 'Não fornecida'}",
-        _render_campo(modelo.redes_sociais, "Redes sociais"),
-        _render_campo(modelo.qr_code, "QR Code"),
-        _render_campo(modelo.ean, "Código de barras (EAN)"),
-        _render_campo(modelo.tabela_nutricional, "Tabela nutricional"),
-        _render_campo(modelo.selos, "Selos"),
-        _render_campo(modelo.box, "Box para escrita"),
-    ]
-    return "\n".join(linhas)
+def briefing(pedido: Pedido, perguntas: str = "") -> str:
+    """Gera o briefing no layout aprovado por Raíza em 2026-06-12 (CY7.6).
 
+    flags só aparecem em ARQUIVOS e nas seções de pendência — nunca dentro dos blocos de modelo.
+    """
+    lines: list[str] = []
 
-def briefing(pedido: Pedido) -> str:
-    """Gera o briefing final completo em texto, espelhando o formato visual do SYSTEM_PROMPT."""
-    partes = []
+    # ── Cabeçalho do pedido ───────────────────────────────────────────────────
+    num = pedido.numero_omie or "?"
+    cli = pedido.cliente or "?"
+    lines.append(f"📋 PEDIDO {num} — {cli}")
+    prod = pedido.produto or "—"
+    qtd = pedido.quantidade_total or "—"
+    lines.append(f"Produto: {prod} · Quantidade total: {qtd}")
 
-    # Identificação
-    partes.append(
-        "📋 IDENTIFICAÇÃO\n"
-        f"• Pedido Omie: {pedido.numero_omie or '🟡 Não informado'}\n"
-        f"• Cliente: {pedido.cliente or '🟡 Não informado'}\n"
-        f"• Produto: {pedido.produto or '🟡 Não informado'}\n"
-        f"• Quantidade total: {pedido.quantidade_total or '🟡 Não informado'}"
-    )
-
-    # Modelos
+    # ── Modelos ───────────────────────────────────────────────────────────────
     for i, modelo in enumerate(pedido.modelos, 1):
-        if modelo.tipo_arte == "reimpressao":
-            partes.append(_bloco_reimpressao(modelo, i))
-        else:
-            partes.append(_bloco_completo(modelo, i))
+        lines.append(_SEP)
 
-    # Arquivos
+        nome_label = f" — {modelo.nome}" if modelo.nome else ""
+        qtd_label = f" · {modelo.quantidade} un" if modelo.quantidade else ""
+        lines.append(f"🎨 MODELO {i}{nome_label}{qtd_label}")
+
+        tipo = _TIPO_RENDER.get(modelo.tipo_arte, modelo.tipo_arte)
+        lines.append(f"Tipo: {tipo}")
+
+        if modelo.arquivo_referencia:
+            nota = " (referência em leque)" if _referencia_e_leque(modelo, pedido.arquivos) else ""
+            lines.append(f"Baseada em: {modelo.arquivo_referencia}{nota}")
+
+        # Apenas campos com valor preenchido — pendentes vão para a seção de pendências
+        for campo_linha in _campos_preenchidos(modelo):
+            lines.append(campo_linha)
+
+        if modelo.acoes_para_arte:
+            lines.append("   Como montar:")
+            for acao in modelo.acoes_para_arte:
+                lines.append(f"   • {acao}")
+
+    # ── Arquivos ──────────────────────────────────────────────────────────────
     if pedido.arquivos:
-        linhas = ["📎 ARQUIVOS RECEBIDOS"]
+        lines.append(_SEP)
+        lines.append("📎 ARQUIVOS")
         for arq in pedido.arquivos:
-            classe = _CLASSE_RENDER.get(arq.classe, arq.classe.upper())
-            status = arq.status_tecnico or "—"
-            linhas.append(f"• {arq.nome} — {classe} — {status}")
-        partes.append("\n".join(linhas))
+            emoji = _FLAG_EMOJI.get(arq.flag, "")
+            prefix = emoji if emoji else "•"
+            classe = _CLASSE_RENDER.get(arq.classe, arq.classe)
+            lines.append(f"{prefix} {arq.nome} — {classe}")
+            if arq.status_tecnico:
+                lines.append(f"   {arq.status_tecnico}")
+            if arq.recomendacao:
+                lines.append(f"   ↳ {arq.recomendacao}")
 
-    # Inconsistências
+    # ── Inconsistências ───────────────────────────────────────────────────────
     if pedido.inconsistencias:
-        linhas = ["⚠️ INCONSISTÊNCIAS IDENTIFICADAS"]
+        lines.append(_SEP)
+        lines.append("⚠️ INCONSISTÊNCIAS")
         for j, inc in enumerate(pedido.inconsistencias, 1):
-            linhas.append(f"{j}. {inc}")
-        partes.append("\n".join(linhas))
+            lines.append(f"{j}. {inc}")
 
-    # Pendências
+    # ── Pendências ────────────────────────────────────────────────────────────
     criticas = pendencias_criticas(pedido)
     complementares = pendencias_complementares(pedido)
 
-    bloco_criticas = "🔴 PENDÊNCIAS CRÍTICAS — bloqueiam início da arte\n"
-    bloco_criticas += "\n".join(f"• {p}" for p in criticas) if criticas else "Nenhuma."
-    partes.append(bloco_criticas)
+    lines.append(_SEP)
 
-    bloco_comp = "🟡 PENDÊNCIAS COMPLEMENTARES\n"
-    bloco_comp += "\n".join(f"• {p}" for p in complementares) if complementares else "Nenhuma."
-    partes.append(bloco_comp)
-
-    # Totais
-    sep = "─" * 37
-    partes.append(
-        f"{sep}\n"
-        f"TOTAIS: {len(criticas)} pendências críticas | {len(complementares)} pendências complementares\n"
-        f"{sep}"
-    )
-
-    return "\n\n".join(partes)
-
-
-def resumo_para_arte(pedido: Pedido) -> str:
-    """Seção Para Arte — ações concretas por modelo + pendências abertas."""
-    linhas = ["📝 **Para Arte:**"]
-    for i, modelo in enumerate(pedido.modelos, 1):
-        if modelo.acoes_para_arte:
-            if len(pedido.modelos) > 1:
-                linhas.append(f"\n**Modelo {i}{' — ' + modelo.nome if modelo.nome else ''}:**")
-            for acao in modelo.acoes_para_arte:
-                linhas.append(f"• {acao}")
-
-    criticas = pendencias_criticas(pedido)
-    if criticas:
-        linhas.append("\n⏳ **Aguardando confirmação:**")
-        for p in criticas:
-            linhas.append(f"• {p}")
+    if not criticas and not complementares:
+        lines.append("✅ Sem pendências — briefing completo.")
     else:
-        linhas.append("\n⏳ **Aguardando confirmação:** Nenhuma pendência.")
+        if criticas:
+            lines.append("🔴 IMPEDE A ARTE — resolver antes de iniciar")
+            for p in criticas:
+                lines.append(f"• {p}")
+        if complementares:
+            lines.append("🟡 NÃO IMPEDE — a arte pode seguir")
+            for p in complementares:
+                lines.append(f"• {p}")
 
-    return "\n".join(linhas)
+    # ── Perguntas ─────────────────────────────────────────────────────────────
+    if perguntas:
+        lines.append(_SEP)
+        lines.append("❓ PERGUNTAS")
+        lines.append(perguntas)
+
+    return "\n".join(lines)

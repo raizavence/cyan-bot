@@ -1,5 +1,5 @@
 """
-handlers/briefing_v2.py — Pipeline v2 do Cyan (CY6.4).
+handlers/briefing_v2.py — Pipeline v2 do Cyan (CY6.4, atualizado CY7.3 + CY7.6).
 Ligado SOMENTE no canal #briefing-teste. Canal de produção (#briefing-do-pedido) permanece v1.
 """
 from __future__ import annotations
@@ -87,7 +87,37 @@ QR/EAN/box APENAS na referência → estado "identificado_na_referencia_aguardan
 
 INCONSISTÊNCIAS: conflito REAL entre dados. Informação faltando é pendência, não inconsistência.
 
-ARTE DE IA → só referência, nunca produção. LEQUE → não aceitar, solicitar versão plana.
+ARTE DE IA → só referência, nunca produção.
+
+ANÁLISE TÉCNICA POR ARQUIVO (preencher status_tecnico, flag e recomendacao de cada Arquivo):
+Use os blocos [DADOS TÉCNICOS {filename}: ...] presentes no contexto + avaliação visual da imagem.
+
+RESOLUÇÃO / NITIDEZ:
+• Imagem nítida e clara → flag "ok"
+• Leve serrilhado visível mas usável → flag "atencao", recomendacao: "Verificar qualidade ao ampliar"
+• Pixelização clara ou resolução nitidamente baixa → flag "recusar", recomendacao: "Solicitar arquivo em maior resolução"
+
+FUNDO DE LOGO:
+• Fundo transparente (indicado nos DADOS TÉCNICOS ou visível) → flag "ok" (preferido — NUNCA rejeitar por falta de CMYK)
+• Fundo branco → flag "atencao", recomendacao: "Solicitar versão com fundo transparente, se disponível"
+• Fundo colorido/estampado quando a aplicação exige transparente → flag "recusar"
+
+LEQUE / MOCKUP 3D (regra Raíza 2026-06-12 — aplicar sempre que identificar):
+• Arte em leque (forma cônica/leque) ou mockup 3D em bitmap → OBRIGATÓRIO:
+  - classe: "referencia"
+  - flag: "atencao"
+  - status_tecnico: "Arte em formato leque (bitmap) — não editável; usar como referência visual"
+  - No modelo correspondente: tipo_arte = "arte_nova", arquivo_referencia = nome deste arquivo
+  - Adicionar em acoes_para_arte: "Recriar arte plana semelhante à referência em leque, com auxílio de ferramenta de IA"
+  - NÃO gerar pendência de reenvio — recriação é o fluxo normal, não um problema
+
+QR/EAN BITMAP DE BAIXA RESOLUÇÃO:
+• flag: "recusar", recomendacao: "Solicitar QR Code ou EAN em vetor ou PNG de alta resolução (min. 300 dpi)"
+
+CLASSIFICAÇÃO PELO CONTEÚDO VISUAL (nunca pelo nome do arquivo):
+• Logo visível (símbolo/texto de marca) com fundo transparente e boa resolução → classe "producao", flag "ok"
+• status_tecnico deve descrever o arquivo: ex. "PNG 2048×1536, fundo transparente — utilizável como produção"
+• Se não for possível avaliar visualmente → flag "" (vazio), status_tecnico: "Avaliação visual não conclusiva"
 
 Formato de resposta — SOMENTE JSON:
 {
@@ -111,11 +141,11 @@ Formato de resposta — SOMENTE JSON:
         "tabela_nutricional": {"estado": "...", "valor": null},
         "selos": {"estado": "...", "valor": null},
         "box": {"estado": "...", "valor": null},
-        "acoes_para_arte": ["ação concreta para o arte finalista"]
+        "acoes_para_arte": ["instrução completa de montagem para o arte finalista"]
       }
     ],
     "arquivos": [
-      {"nome": "nome_exato_do_arquivo.ext", "url": "", "classe": "producao|referencia|indefinido", "status_tecnico": ""}
+      {"nome": "nome_exato.ext", "url": "", "classe": "producao|referencia|indefinido", "status_tecnico": "PNG 1920×1080, fundo transparente — utilizável como produção", "flag": "ok|atencao|recusar|", "recomendacao": ""}
     ],
     "inconsistencias": []
   },
@@ -140,7 +170,9 @@ Formato de resposta — SOMENTE JSON:
         }
       }
     ],
-    "novos_arquivos": [],
+    "novos_arquivos": [
+      {"nome": "arquivo.png", "url": "", "classe": "producao|referencia|indefinido", "status_tecnico": "...", "flag": "ok|atencao|recusar|", "recomendacao": "..."}
+    ],
     "inconsistencias": []
   },
   "perguntas": "Próximas perguntas, ou string vazia se tudo resolvido"
@@ -152,7 +184,10 @@ REGRAS:
 • QR Code ou EAN recebido: estado = "preenchido". Não vai enviar: "nao_se_aplica"
 • "modelos" só com índices que sofreram atualização
 • "pedido" só com campos que a resposta resolve (null = não atualizar)
-• Máximo 3 perguntas por rodada."""
+• novos_arquivos: se arquivo já existe no pedido (mesmo nome), atualizar seus campos técnicos
+• Máximo 3 perguntas por rodada.
+• Para novos arquivos recebidos com imagem visível: aplicar as mesmas regras de ANÁLISE TÉCNICA
+  do prompt de extração (leque, fundo, resolução, classificação pelo conteúdo visual)."""
 
 
 # ── Handler V2 ────────────────────────────────────────────────────────────────
@@ -193,23 +228,20 @@ class BriefingV2Handler:
 
             pedido, perguntas = await self._extract_pedido(content_parts, file_records)
 
-            # Persistir
-            conversation = []
+            criticas = pendencias_criticas(pedido)
             order_state.save_v2(
                 interaction.channel.id,
                 pedido_to_json(pedido),
-                json.dumps(conversation),
-                "complete" if not pendencias_criticas(pedido) else "questionnaire",
+                json.dumps([]),
+                "complete" if not criticas else "questionnaire",
             )
 
-            await self._post_pedido_parcial(interaction.channel, pedido)
-
-            criticas = pendencias_criticas(pedido)
             if not criticas:
                 await self._finalize_and_post(interaction.channel, pedido)
             else:
-                if perguntas:
-                    await self._post_perguntas(interaction.channel, perguntas)
+                await self._post_pedido_parcial(interaction.channel, pedido, perguntas)
+                view = ArtistCallView(self.v1, interaction.channel.id)
+                await interaction.channel.send("_Se precisar acionar a arte finalista:_", view=view)
 
         except Exception as exc:
             logger.error(f"[v2] Erro no /briefing: {exc}", exc_info=True)
@@ -246,8 +278,10 @@ class BriefingV2Handler:
 
             if not criticas:
                 await self._finalize_and_post(message.channel, pedido)
-            elif perguntas:
-                await self._post_perguntas(message.channel, perguntas)
+            else:
+                await self._post_pedido_parcial(message.channel, pedido, perguntas)
+                view = ArtistCallView(self.v1, message.channel.id)
+                await message.channel.send("_Se precisar acionar a arte finalista:_", view=view)
 
         except Exception as exc:
             logger.error(f"[v2] Erro ao processar resposta: {exc}", exc_info=True)
@@ -256,7 +290,7 @@ class BriefingV2Handler:
     # ── on_message: arquivo durante questionário (resolve C-BUG4) ─────────────
 
     async def handle_attachment(self, message: discord.Message) -> None:
-        """Arquivo chegou durante questionário v2 — integra ao Pedido (C-BUG4 resolvido)."""
+        """Arquivo chegou durante questionário v2 — integra ao Pedido com análise visual (CY7.3)."""
         row = order_state.get_v2_raw(message.channel.id)
         if not row:
             return
@@ -267,10 +301,12 @@ class BriefingV2Handler:
         pedido = pedido_from_json(pedido_json)
         conversation = json.loads(conv_json)
         novos = []
+        all_visual_parts: list[dict] = []
 
         for att in message.attachments:
             try:
                 parts = await self.file_processor.process_attachment(att)
+                all_visual_parts.extend(parts)   # acumula partes visuais para o GPT
                 classe = await classificar_arquivo(att.filename, parts, self.ai.client)
                 arq = Arquivo(nome=att.filename, url=att.url, classe=classe, status_tecnico="")
                 # Evitar duplicata por nome
@@ -289,7 +325,10 @@ class BriefingV2Handler:
 
         try:
             async with message.channel.typing():
-                pedido, perguntas = await self._update_pedido(pedido, update_msg, conversation)
+                # Passa partes visuais para GPT analisar tecnicamente (CY7.3)
+                pedido, perguntas = await self._update_pedido(
+                    pedido, update_msg, conversation, image_parts=all_visual_parts
+                )
 
             conversation.append({"role": "assistant", "content": perguntas or "(sem perguntas)"})
             criticas = pendencias_criticas(pedido)
@@ -302,13 +341,12 @@ class BriefingV2Handler:
                 new_stage,
             )
 
-            await message.channel.send(
-                f"📎 {nomes_fmt} recebido(s) e adicionado(s) ao briefing."
-            )
             if not criticas:
                 await self._finalize_and_post(message.channel, pedido)
-            elif perguntas:
-                await self._post_perguntas(message.channel, perguntas)
+            else:
+                await self._post_pedido_parcial(message.channel, pedido, perguntas)
+                view = ArtistCallView(self.v1, message.channel.id)
+                await message.channel.send("_Se precisar acionar a arte finalista:_", view=view)
 
         except Exception as exc:
             logger.error(f"[v2] Erro ao integrar anexo: {exc}", exc_info=True)
@@ -374,14 +412,15 @@ class BriefingV2Handler:
         pedido = pedido_from_json(data.get("pedido", {}))
         perguntas = data.get("perguntas", "")
 
-        # Patch URLs e classificação canônica dos arquivos
+        # Patch URLs e classificação canônica por extensão (vetorial/PSD/PDF prevalece;
+        # rasters mantêm a decisão visual do GPT — CY7.3)
         for arq in pedido.arquivos:
             rec = file_records.get(arq.nome)
             if rec:
                 arq.url = rec.url
-            # Classificação determinística prevalece sobre GPT quando não é indefinido
             classe_det = await classificar_arquivo(arq.nome, None)
             if classe_det != "indefinido":
+                # Determinístico só para formatos não-raster (vetor, PSD, PDF)
                 arq.classe = classe_det
 
         return pedido, perguntas
@@ -389,13 +428,26 @@ class BriefingV2Handler:
     # ── chamada de atualização ────────────────────────────────────────────────
 
     async def _update_pedido(
-        self, pedido: Pedido, resposta: str, conversation: list
+        self,
+        pedido: Pedido,
+        resposta: str,
+        conversation: list,
+        image_parts: list | None = None,
     ) -> tuple[Pedido, str]:
-        """Atualiza o Pedido com a resposta do atendimento via GPT estruturado."""
-        user_content = (
+        """Atualiza o Pedido com a resposta do atendimento via GPT estruturado.
+
+        image_parts: partes visuais (text + image_url) de anexos recebidos no turno atual.
+        Quando presentes, o GPT vê as imagens e aplica análise técnica (CY7.3).
+        """
+        text_content = (
             f"Estado atual do pedido:\n```json\n{pedido_to_json(pedido)}\n```\n\n"
             f"Resposta do atendimento: {resposta}"
         )
+        if image_parts:
+            user_content: str | list = [{"type": "text", "text": text_content}, *image_parts]
+        else:
+            user_content = text_content
+
         response = await self.ai.client.chat.completions.create(
             model=self.ai.model,
             messages=[
@@ -421,32 +473,26 @@ class BriefingV2Handler:
     # ── entrega final ─────────────────────────────────────────────────────────
 
     async def _finalize_and_post(self, channel: discord.TextChannel, pedido: Pedido) -> None:
-        briefing_text = render.briefing(pedido)
-        resumo_text = render.resumo_para_arte(pedido)
-
+        """Posta o briefing final completo com cabeçalho de conclusão (CY7.6)."""
+        briefing_text = render.briefing(pedido)  # sem perguntas abertas
         await channel.send(
             f"✅ **Briefing v2 finalizado!**\n"
             f"Cliente: **{pedido.cliente or '?'}** | Pedido: **{pedido.numero_omie or '?'}**\n"
             f"{'─' * 40}"
         )
         await self.v1._send_chunked(channel, briefing_text)
-        await channel.send("─" * 40 + "\n" + resumo_text)
         await channel.send(
             "_Use **/limpar** para apagar as mensagens e liberar o canal para o próximo pedido._"
         )
 
     # ── helpers ────────────────────────────────────────────────────────────────
 
-    async def _post_pedido_parcial(self, channel: discord.TextChannel, pedido: Pedido) -> None:
-        """Posta o estado atual do pedido (briefing parcial) para o atendimento acompanhar."""
-        texto = render.briefing(pedido)
+    async def _post_pedido_parcial(
+        self, channel: discord.TextChannel, pedido: Pedido, perguntas: str = ""
+    ) -> None:
+        """Posta o briefing em andamento com perguntas embutidas na seção ❓ (CY7.6)."""
+        texto = render.briefing(pedido, perguntas)
         await self.v1._send_chunked(channel, texto)
-
-    async def _post_perguntas(self, channel: discord.TextChannel, perguntas: str) -> None:
-        """Posta as perguntas e o botão de chamado de arte."""
-        await channel.send("─" * 40 + "\n**❓ Perguntas para o atendimento:**\n\n" + perguntas)
-        view = ArtistCallView(self.v1, channel.id)
-        await channel.send("_Se precisar acionar a arte finalista:_", view=view)
 
 
 # ── Aplicador de atualizações ─────────────────────────────────────────────────
@@ -488,15 +534,30 @@ def _apply_updates(pedido: Pedido, atualizacoes: dict) -> Pedido:
                     cv.estado = "preenchido"
                     cv.valor = valor
 
-    # Novos arquivos enviados durante questionário
+    # Arquivos: atualiza existentes (mesmo nome) ou adiciona novos (CY7.3)
     for arq_data in atualizacoes.get("novos_arquivos", []):
         nome = arq_data.get("nome", "")
-        if nome and not any(a.nome == nome for a in pedido.arquivos):
+        if not nome:
+            continue
+        existing = next((a for a in pedido.arquivos if a.nome == nome), None)
+        if existing:
+            # Atualiza campos técnicos do arquivo já presente
+            if arq_data.get("classe"):
+                existing.classe = arq_data["classe"]
+            if arq_data.get("status_tecnico"):
+                existing.status_tecnico = arq_data["status_tecnico"]
+            if "flag" in arq_data:
+                existing.flag = arq_data["flag"]
+            if "recomendacao" in arq_data:
+                existing.recomendacao = arq_data["recomendacao"]
+        else:
             pedido.arquivos.append(Arquivo(
                 nome=nome,
                 url=arq_data.get("url", ""),
                 classe=arq_data.get("classe", "indefinido"),
                 status_tecnico=arq_data.get("status_tecnico", ""),
+                flag=arq_data.get("flag", ""),
+                recomendacao=arq_data.get("recomendacao", ""),
             ))
 
     # Inconsistências novas

@@ -50,6 +50,8 @@ class Arquivo:
     url: str = ""
     classe: str = "indefinido"           # producao | referencia | indefinido
     status_tecnico: str = ""
+    flag: str = ""                        # ok | atencao | recusar | ""
+    recomendacao: str = ""               # ação recomendada ao atendimento
 
 
 @dataclass
@@ -99,6 +101,13 @@ REQUISITOS_POR_TIPO: dict[str, dict[str, list[str]]] = {
 
 def pendencias_criticas(pedido: Pedido) -> list[str]:
     result = []
+
+    # Arquivos com flag "recusar" bloqueiam o início da arte (CY7.4)
+    for arq in pedido.arquivos:
+        if arq.flag == "recusar":
+            detalhe = arq.recomendacao or arq.status_tecnico or "inadequado"
+            result.append(f"Arquivo {arq.nome}: {detalhe}")
+
     for i, modelo in enumerate(pedido.modelos, 1):
         label = f"Modelo {i} ({modelo.nome})" if modelo.nome else f"Modelo {i}"
         if modelo.tipo_arte == "pendente":
@@ -131,6 +140,13 @@ def pendencias_criticas(pedido: Pedido) -> list[str]:
 
 def pendencias_complementares(pedido: Pedido) -> list[str]:
     result = []
+
+    # Arquivos com flag "atencao" e recomendação → complementar (CY7.4)
+    # Leque entra aqui: não bloqueia, mas o briefing deve registrar
+    for arq in pedido.arquivos:
+        if arq.flag == "atencao" and arq.recomendacao:
+            result.append(f"Arquivo {arq.nome}: {arq.recomendacao}")
+
     for i, modelo in enumerate(pedido.modelos, 1):
         label = f"Modelo {i} ({modelo.nome})" if modelo.nome else f"Modelo {i}"
         if modelo.tipo_arte == "pendente":

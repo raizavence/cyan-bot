@@ -102,17 +102,25 @@ class FileProcessor:
             from PIL import Image as PILImage
 
             data = await self._download(attachment.url)
+            size_kb = len(data) / 1024
 
             # Valida e re-encoda com Pillow
             img = PILImage.open(io.BytesIO(data))
+
+            # Capturar metadados ANTES de qualquer conversão (CY7.1)
+            formato_real = img.format or "DESCONHECIDO"
+            orig_w, orig_h = img.size
 
             # Mantém transparência como PNG, converte o resto para JPEG
             if img.mode in ("RGBA", "LA", "P"):
                 img = img.convert("RGBA")
                 fmt, mime = "PNG", "png"
+                # Transparência real: canal alpha com ao menos um pixel < 255
+                tem_alpha = img.getextrema()[3][0] < 255
             else:
                 img = img.convert("RGB")
                 fmt, mime = "JPEG", "jpeg"
+                tem_alpha = False
 
             # Redimensiona se maior que 1568px (evita payload enorme)
             MAX_PX = 1568
@@ -145,14 +153,21 @@ class FileProcessor:
                 f"Imagem OK: {attachment.filename} → {img.size} {fmt} ({len(b64)//1024}KB b64)"
             )
 
+            meta_text = (
+                f"[DADOS TÉCNICOS {attachment.filename}: formato {formato_real}, "
+                f"{orig_w}×{orig_h} px (original), "
+                f"fundo transparente: {'sim' if tem_alpha else 'não'}, "
+                f"{size_kb:.0f} KB]"
+            )
             return [
+                {"type": "text", "text": meta_text},
                 {
                     "type": "image_url",
                     "image_url": {
                         "url": f"data:image/{mime};base64,{b64}",
                         "detail": "high",
                     },
-                }
+                },
             ]
         except Exception as exc:
             logger.error(f"Erro ao processar imagem {attachment.filename}: {exc}", exc_info=True)
@@ -404,7 +419,7 @@ class FileProcessor:
                     "type": "text",
                     "text": (
                         f"🎨 Arquivo vetorial **{filename}** (PostScript/EPS/AI) — "
-                        f"formato válido para produção offset. "
+                        f"vetor — escalável sem perda. Formato válido para produção offset. "
                         f"Ghostscript não disponível; análise visual não realizada."
                     ),
                 }
@@ -444,7 +459,7 @@ class FileProcessor:
                 parts: list[dict] = [
                     {
                         "type": "text",
-                        "text": f"🎨 Arquivo vetorial **{filename}** — {len(pages)} página(s) renderizada(s):",
+                        "text": f"🎨 Arquivo vetorial **{filename}** — vetor — escalável sem perda — {len(pages)} página(s) renderizada(s):",
                     }
                 ]
 
@@ -486,7 +501,7 @@ class FileProcessor:
                 {
                     "type": "text",
                     "text": (
-                        f"🎨 Arquivo vetorial **{filename}** recebido (PS/EPS/AI — formato válido para offset). "
+                        f"🎨 Arquivo vetorial **{filename}** (PS/EPS/AI — vetor — escalável sem perda). "
                         f"Renderização não concluída a tempo — verifique o arquivo manualmente."
                     ),
                 }
@@ -497,7 +512,7 @@ class FileProcessor:
                 {
                     "type": "text",
                     "text": (
-                        f"🎨 Arquivo vetorial **{filename}** recebido (PS/EPS/AI — formato válido para offset). "
+                        f"🎨 Arquivo vetorial **{filename}** (PS/EPS/AI — vetor — escalável sem perda). "
                         f"Não foi possível renderizar: {exc}"
                     ),
                 }
@@ -545,14 +560,21 @@ class FileProcessor:
         try:
             from PIL import Image as PILImage
 
+            size_kb = len(data) / 1024
             img = PILImage.open(io.BytesIO(data))
+
+            # Capturar metadados ANTES de qualquer conversão (CY7.1)
+            formato_real = img.format or "DESCONHECIDO"
+            orig_w, orig_h = img.size
 
             if img.mode in ("RGBA", "LA", "P"):
                 img = img.convert("RGBA")
                 fmt, mime = "PNG", "png"
+                tem_alpha = img.getextrema()[3][0] < 255
             else:
                 img = img.convert("RGB")
                 fmt, mime = "JPEG", "jpeg"
+                tem_alpha = False
 
             MAX_PX = 1568
             if max(img.size) > MAX_PX:
@@ -564,7 +586,16 @@ class FileProcessor:
 
             logger.info(f"Imagem OK: {filename} → {img.size} {fmt} ({len(b64)//1024}KB b64)")
 
-            return [{"type": "image_url", "image_url": {"url": f"data:image/{mime};base64,{b64}", "detail": "high"}}]
+            meta_text = (
+                f"[DADOS TÉCNICOS {filename}: formato {formato_real}, "
+                f"{orig_w}×{orig_h} px (original), "
+                f"fundo transparente: {'sim' if tem_alpha else 'não'}, "
+                f"{size_kb:.0f} KB]"
+            )
+            return [
+                {"type": "text", "text": meta_text},
+                {"type": "image_url", "image_url": {"url": f"data:image/{mime};base64,{b64}", "detail": "high"}},
+            ]
         except Exception as exc:
             logger.error(f"Erro ao processar imagem {filename}: {exc}", exc_info=True)
             return [{"type": "text", "text": f"⚠️ Não foi possível processar a imagem **{filename}**: {exc}"}]
@@ -641,9 +672,11 @@ class FileProcessor:
             if img.mode in ("RGBA", "LA", "P"):
                 img = img.convert("RGBA")
                 fmt, mime = "PNG", "png"
+                tem_alpha = img.getextrema()[3][0] < 255
             else:
                 img = img.convert("RGB")
                 fmt, mime = "JPEG", "jpeg"
+                tem_alpha = False
 
             MAX_PX = 1568
             if max(img.size) > MAX_PX:
@@ -656,7 +689,7 @@ class FileProcessor:
             logger.info(f"PSD renderizado: {filename} → {img.size} {fmt} ({len(b64)//1024}KB b64)")
 
             return [
-                {"type": "text", "text": f"🎨 PSD renderizado: **{filename}** ({psd.width}×{psd.height}px, {len(psd)} camada(s))"},
+                {"type": "text", "text": f"🎨 PSD renderizado: **{filename}** ({psd.width}×{psd.height}px, {len(psd)} camada(s), fundo transparente: {'sim' if tem_alpha else 'não'})"},
                 {"type": "image_url", "image_url": {"url": f"data:image/{mime};base64,{b64}", "detail": "high"}},
             ]
 
