@@ -58,42 +58,36 @@ async def _post_presentation_if_needed() -> None:
     if not channel:
         logger.warning("Canal Geral não encontrado — verifique GERAL_CHANNEL_ID")
         return
+
+    # Só posta se o bot não enviou mensagem recente no canal (últimas 50)
     try:
-        already_pinned = False
-        async for m in channel.pins():
+        async for m in channel.history(limit=50):
             if m.author.id == bot.user.id:
-                already_pinned = True
-                break
-        if already_pinned:
-            return
+                return
     except Exception as exc:
-        logger.warning(f"Não foi possível verificar pins no Geral: {exc}")
+        logger.warning(f"Não foi possível verificar histórico do Geral: {exc}")
         return
 
     texto = (
-        "**Olá, eu sou o Cyan 🤓**\n\n"
-        "Sou o assistente Pré-Arte da Copack, treinado no processo de arte final. "
-        "Estou aqui pra garantir que o setor de Arte receba "
-        "tudo que precisa, sem informação faltando e sem retrabalho.\n\n"
-        "**O que faço:**\n"
-        "• Leio os materiais enviados pelo atendimento (prints, imagens, PDFs, arquivos)\n"
-        "• Monto o briefing completo do pedido com tudo que o setor de Arte precisa\n"
-        "• Analiso tecnicamente os arquivos: resolução, modo de cor, adequação para offset\n"
-        "• Identifico o que está faltando e faço as perguntas certas antes que vire retrabalho\n\n"
-        "**Como usar:**\n"
-        "O canal **#briefing-do-pedido** funciona um pedido por vez. O fluxo é:\n"
-        "1. Envie os materiais do pedido (prints, imagens, PDFs, arquivos)\n"
-        "2. Use `/briefing` — eu analiso tudo e faço as perguntas necessárias\n"
-        "3. Responda as perguntas normalmente no chat\n"
-        "4. Use `/finalizar` — eu gero o briefing completo e o pacote de arquivos\n"
-        "5. Use `/limpar` — o canal é zerado e fica pronto para o próximo pedido\n\n"
-        "**Comandos disponíveis:**\n"
-        "`/briefing` — inicia a análise dos materiais e o questionário\n"
-        "`/finalizar` — encerra o questionário e gera o pacote final\n"
-        "`/limpar` — apaga as mensagens do canal e reseta para novo pedido\n"
-        "`/analisar` — analisa arquivos manualmente no **#análise-de-arquivos**\n\n"
-        "**Este canal — #geral** — é onde vocês relatam erros ou comportamentos inesperados meus. "
-        "Cada relato me ajuda a melhorar."
+        "Olá! Sou o **Cyan 🤓** — assistente Pré-Arte da Copack, treinado no processo de arte final.\n\n"
+        "Estou aqui para garantir que o setor de Arte receba tudo que precisa, sem informação faltando e sem retrabalho.\n\n"
+        "─────────────────────────────────\n"
+        "⚠️ **Estamos em fase de testes**\n"
+        "Por enquanto, use apenas o canal **#briefing-teste** para experimentar o fluxo. "
+        "O canal de produção será liberado em breve.\n"
+        "─────────────────────────────────\n\n"
+        "**Como usar o canal de briefing:**\n"
+        "1. Vá para **#briefing-teste**\n"
+        "2. Envie todos os materiais do pedido — prints do WhatsApp, imagens, PDFs, arquivos do cliente\n"
+        "3. Use `/briefing` — eu analiso tudo e faço as perguntas que precisam ser respondidas antes de ir para a Arte\n"
+        "4. Responda minhas perguntas no chat\n"
+        "5. Use `/finalizar` — o briefing completo é postado no canal\n"
+        "6. Use `/limpar` para zerar o canal e receber o próximo pedido\n\n"
+        "**Regras do canal:**\n"
+        "• Um pedido por vez\n"
+        "• Sem `/briefing` ativo, mensagens são ignoradas\n"
+        "• Sessão expira automaticamente após 2 horas sem atividade\n\n"
+        "Dúvidas sobre arquivos ou fluxo? Use `/ajuda` em qualquer canal."
     )
     try:
         msg = await channel.send(texto)
@@ -106,6 +100,43 @@ async def _post_presentation_if_needed() -> None:
         logger.info("Mensagem de apresentação fixada no canal Geral")
     except discord.Forbidden:
         logger.warning("Sem permissão para fixar mensagem no Geral — pin manual necessário")
+
+
+async def _post_teste_pin_if_needed() -> None:
+    if not config.TEST_BRIEFING_CHANNEL_ID:
+        return
+    channel = bot.get_channel(int(config.TEST_BRIEFING_CHANNEL_ID))
+    if not channel:
+        return
+    try:
+        async for m in channel.pins():
+            if m.author.id == bot.user.id:
+                return  # já tem pin
+    except Exception as exc:
+        logger.warning(f"Não foi possível verificar pins no canal de teste: {exc}")
+        return
+
+    texto = (
+        "**Canal de teste do Cyan 🧪**\n\n"
+        "Por enquanto, todos os briefings devem ser feitos aqui.\n\n"
+        "**Fluxo:**\n"
+        "1. Envie os materiais do pedido (prints, imagens, PDFs, arquivos)\n"
+        "2. Use `/briefing` — eu analiso tudo e faço as perguntas necessárias\n"
+        "3. Responda as perguntas no chat\n"
+        "4. Use `/finalizar` — briefing completo postado no canal\n"
+        "5. Use `/limpar` — canal zerado para o próximo pedido"
+    )
+    try:
+        msg = await channel.send(texto)
+        logger.info("Mensagem de orientação postada no #briefing-teste")
+    except Exception as exc:
+        logger.error(f"Erro ao postar mensagem no canal de teste: {exc}")
+        return
+    try:
+        await msg.pin()
+        logger.info("Mensagem de orientação fixada no #briefing-teste")
+    except discord.Forbidden:
+        logger.warning("Sem permissão para fixar no canal de teste — pin manual necessário")
 
 
 async def _avisar_se_briefing_em_andamento() -> None:
@@ -214,6 +245,7 @@ async def on_ready() -> None:
     except Exception as exc:
         logger.error(f"Erro ao sincronizar comandos: {exc}")
     await _post_presentation_if_needed()
+    await _post_teste_pin_if_needed()
     await _avisar_se_briefing_em_andamento()
     await _avisar_v2_se_briefing_em_andamento()
     await _anunciar_v2_se_necessario()
@@ -226,9 +258,13 @@ async def on_message(message: discord.Message) -> None:
 
     ch_id = str(message.channel.id)
 
-    # Canal de análise: análise automática de arquivos
-    if ch_id == config.ANALYSIS_CHANNEL_ID and message.attachments:
-        await analysis_handler.handle_automatic(message)
+    # Canal de análise: pausado temporariamente
+    if ch_id == config.ANALYSIS_CHANNEL_ID:
+        if message.attachments:
+            await message.channel.send(
+                "⏸️ Este canal está temporariamente pausado. Use **#briefing-teste** por enquanto.",
+                delete_after=10,
+            )
         return
 
     # ── Canal de teste (#briefing-teste) — pipeline v2 ────────────────────────
@@ -248,55 +284,13 @@ async def on_message(message: discord.Message) -> None:
             )
         return  # sem bot.process_commands — canal de teste só aceita slash commands
 
-    # ── Canal de briefing de produção ─────────────────────────────────────────
+    # ── Canal de briefing de produção — pausado temporariamente ──────────────
     if ch_id == config.BRIEFING_CHANNEL_ID:
-        if config.CYAN_FLOW == "v2":
-            # Chamado de arte (pending_call vive no estado v1, acionado por Views)
-            v1_state = order_state.get(message.channel.id)
-            if v1_state and v1_state.pending_call:
-                if message.author.id == v1_state.pending_call.user_id and message.attachments:
-                    await briefing_handler.send_artist_call(message.channel, v1_state, message)
-                    return
-            # Fluxo principal v2 — todas as fases ativas (CY8)
-            row = order_state.get_v2_raw(message.channel.id)
-            _FASES_ATIVAS = ("questionnaire", "checklist", "confirmacao", "observacao")
-            if row and row[2] in _FASES_ATIVAS:
-                if message.attachments:
-                    await briefing_v2_handler.handle_attachment(message)
-                else:
-                    await briefing_v2_handler.handle_response(message)
-                return
-            if not row and not message.author.bot:
-                await message.channel.send(
-                    "Não há briefing ativo. Use **/briefing** para iniciar a análise.",
-                    delete_after=8,
-                )
-            return
-        # v1
-        state = order_state.get(message.channel.id)
-        if state and state.pending_call:
-            if (
-                message.author.id == state.pending_call.user_id
-                and message.attachments
-            ):
-                await briefing_handler.send_artist_call(message.channel, state, message)
-                return
-        if state and state.stage == "questionnaire":
-            if message.attachments:
-                nomes = ", ".join(f"**{a.filename}**" for a in message.attachments)
-                await message.channel.send(
-                    f"📎 Recebi {nomes}. Para incluí-lo na análise, use **/briefing** novamente — eu recoleto tudo do canal.",
-                    delete_after=20,
-                )
-                return
-            await briefing_handler.handle_response(message)
-            return
-        if not state and not message.author.bot:
-            await message.channel.send(
-                "Não há briefing ativo. Use **/briefing** para iniciar a análise.",
-                delete_after=8,
-            )
-            return
+        await message.channel.send(
+            "⏸️ Este canal está temporariamente pausado. Use **#briefing-teste** por enquanto.",
+            delete_after=10,
+        )
+        return
 
     await bot.process_commands(message)
 
@@ -313,13 +307,13 @@ async def cmd_briefing(interaction: discord.Interaction) -> None:
         await briefing_v2_handler.handle(interaction)
         return
     if ch_id == config.BRIEFING_CHANNEL_ID:
-        if config.CYAN_FLOW == "v2":
-            await briefing_v2_handler.handle(interaction)
-        else:
-            await briefing_handler.handle(interaction)
+        await interaction.response.send_message(
+            "⏸️ Este canal está temporariamente pausado. Use **#briefing-teste** por enquanto.",
+            ephemeral=True,
+        )
         return
     await interaction.response.send_message(
-        "❌ Use este comando no canal **#briefing-do-pedido**.", ephemeral=True
+        "❌ Use este comando no canal **#briefing-teste**.", ephemeral=True
     )
 
 
@@ -328,12 +322,15 @@ async def cmd_briefing(interaction: discord.Interaction) -> None:
     description="Analisa tecnicamente os arquivos mais recentes neste canal",
 )
 async def cmd_analisar(interaction: discord.Interaction) -> None:
-    if str(interaction.channel_id) != config.ANALYSIS_CHANNEL_ID:
+    if str(interaction.channel_id) == config.ANALYSIS_CHANNEL_ID:
         await interaction.response.send_message(
-            "❌ Use este comando no canal **#análise-de-arquivos**.", ephemeral=True
+            "⏸️ Este canal está temporariamente pausado. Use **#briefing-teste** por enquanto.",
+            ephemeral=True,
         )
         return
-    await analysis_handler.handle_command(interaction)
+    await interaction.response.send_message(
+        "❌ Use este comando no canal **#análise-de-arquivos**.", ephemeral=True
+    )
 
 
 @bot.tree.command(
@@ -396,13 +393,13 @@ async def cmd_finalizar(interaction: discord.Interaction) -> None:
         await briefing_v2_handler.finalize(interaction)
         return
     if ch_id == config.BRIEFING_CHANNEL_ID:
-        if config.CYAN_FLOW == "v2":
-            await briefing_v2_handler.finalize(interaction)
-        else:
-            await briefing_handler.finalize(interaction)
+        await interaction.response.send_message(
+            "⏸️ Este canal está temporariamente pausado. Use **#briefing-teste** por enquanto.",
+            ephemeral=True,
+        )
         return
     await interaction.response.send_message(
-        "❌ Use este comando no canal **#briefing-do-pedido**.", ephemeral=True
+        "❌ Use este comando no canal **#briefing-teste**.", ephemeral=True
     )
 
 
