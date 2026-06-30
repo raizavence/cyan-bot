@@ -238,7 +238,7 @@ async def on_ready() -> None:
         )
     )
     try:
-        guild = discord.Object(id=1508828656804561059)
+        guild = discord.Object(id=1521587717933236305)
         bot.tree.copy_global_to(guild=guild)
         synced = await bot.tree.sync(guild=guild)
         logger.info(f"Sincronizados {len(synced)} comando(s) slash no servidor")
